@@ -1,0 +1,12 @@
+flask>=3.0.0
+{% if 'sqlite' in features %}
+flask-sqlalchemy>=3.1.0
+flask-migrate>=4.0.0
+{% endif %}
+{% if 'admin-user' in features %}
+flask-login>=0.6.0
+werkzeug>=3.0.0
+{% endif %}
+{% if 'api' in features %}
+flask-restful>=0.3.10
+{% endif %}

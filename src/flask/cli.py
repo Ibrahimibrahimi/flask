@@ -594,6 +594,7 @@ class FlaskGroup(AppGroup):
             self.add_command(run_command)
             self.add_command(shell_command)
             self.add_command(routes_command)
+            self.add_command(create_command)
 
         self._loaded_plugin_commands = False
 
@@ -1105,6 +1106,384 @@ def routes_command(sort: str, all_methods: bool) -> None:
 
     for row in rows:
         click.echo(template.format(*row))
+
+
+@click.command("create", short_help="Create a new Flask project with customizable features.")
+@click.option("--project", is_flag=True, help="Create a new project structure.")
+@click.option(
+    "--includes",
+    default="all",
+    help="Comma-separated features: sqlite,admin-user,admin-panel,bootstrap,api,all",
+)
+@click.option("--path", default=".", help="Path where project will be created.")
+@click.option("--name", default="flask-app", help="Name of the project.")
+def create_command(project: bool, includes: str, path: str, name: str) -> None:
+    """Create a new Flask project with customizable features.
+
+    By default, creates a full project with all features enabled.
+    Use --includes to specify which features to include.
+
+    \b
+    Examples:
+        flask create --project --name my-app
+        flask create --project --includes sqlite,admin-user --name simple-app
+        flask create --project --includes all --path ./projects --name full-app
+    """
+    import os
+    import shutil
+    from pathlib import Path
+
+    # Parse includes
+    if includes == "all":
+        features = ["sqlite", "admin-user", "admin-panel", "bootstrap", "api"]
+    else:
+        features = [f.strip() for f in includes.split(",")]
+
+    # Validate features
+    valid_features = {"sqlite", "admin-user", "admin-panel", "bootstrap", "api"}
+    for feature in features:
+        if feature not in valid_features:
+            click.echo(f"Error: Invalid feature '{feature}'. Valid features: {', '.join(sorted(valid_features))}", err=True)
+            return
+
+    # Create project directory
+    project_path = Path(path) / name
+    if project_path.exists():
+        click.echo(f"Error: Directory '{project_path}' already exists.", err=True)
+        return
+
+    click.echo(f"Creating project '{name}' at {project_path}...")
+    click.echo(f"Features: {', '.join(features)}")
+
+    # Create directory structure
+    directories = [
+        project_path,
+        project_path / "app",
+        project_path / "static",
+        project_path / "templates",
+    ]
+
+    if "admin-panel" in features:
+        directories.append(project_path / "templates" / "admin")
+
+    for directory in directories:
+        directory.mkdir(parents=True, exist_ok=True)
+
+    # Get template directory
+    template_dir = Path(__file__).parent / "cli_templates"
+
+    # Helper function to render template using Jinja2
+    def render_template(template_path: Path, output_path: Path, templates_dir: Path = None) -> None:
+        from jinja2 import Environment, FileSystemLoader, BaseLoader
+
+        # Use FileSystemLoader if templates_dir is provided
+        if templates_dir and templates_dir.exists():
+            env = Environment(loader=FileSystemLoader(str(templates_dir)))
+        else:
+            env = Environment(loader=BaseLoader())
+        
+        with open(template_path, "r") as f:
+            template_content = f.read()
+        
+        # Mock url_for for template rendering
+        def mock_url_for(endpoint, **kwargs):
+            # Map endpoints to URL patterns
+            url_map = {
+                "main.index": "/",
+                "main.items": "/items",
+                "main.create_item": "/items/create",
+                "main.edit_item": f"/items/{kwargs.get('item_id', 1)}/edit",
+                "main.delete_item": f"/items/{kwargs.get('item_id', 1)}/delete",
+                "auth.login": "/login",
+                "auth.logout": "/logout",
+                "auth.register": "/register",
+                "admin.dashboard": "/admin/",
+                "admin.users": "/admin/users",
+                "admin.toggle_admin": f"/admin/users/{kwargs.get('user_id', 1)}/toggle-admin",
+                "admin.delete_user": f"/admin/users/{kwargs.get('user_id', 1)}/delete",
+                "admin.items": "/admin/items",
+                "admin.delete_item": f"/admin/items/{kwargs.get('item_id', 1)}/delete",
+                "static": f"/static/{kwargs.get('filename', '')}",
+            }
+            return url_map.get(endpoint, f"/{endpoint.replace('.', '/')}")
+        
+        # Mock flash function
+        def mock_flash(message, category="info"):
+            pass
+        
+        # Mock get_flashed_messages function
+        def mock_get_flashed_messages(with_categories=False):
+            return []
+        
+        template = env.from_string(template_content)
+        
+        # Prepare template context
+        context = {
+            "project_name": name,
+            "features": features,
+            "url_for": mock_url_for,
+            "flash": mock_flash,
+            "get_flashed_messages": mock_get_flashed_messages,
+            "current_user": type("User", (), {"is_authenticated": False, "is_admin": False, "username": "User"})(),
+        }
+        
+        rendered = template.render(**context)
+        
+        with open(output_path, "w") as f:
+            f.write(rendered)
+
+    # Render base templates
+    base_templates = {
+        "app.py.j2": "app/__init__.py",
+        "config.py.j2": "config.py",
+        "run.py.j2": "run.py",
+        "requirements.txt.j2": "requirements.txt",
+        "routes.py.j2": "app/routes.py",
+        ".env.j2": ".env",
+    }
+
+    for template_file, output_file in base_templates.items():
+        template_path = template_dir / "base" / template_file
+        output_path = project_path / output_file
+        if template_path.exists():
+            render_template(template_path, output_path)
+
+    # Create app/__init__.py (empty)
+    (project_path / "app" / "__init__.py").touch()
+
+    # Render SQLite templates
+    if "sqlite" in features:
+        sqlite_templates = {
+            "models.py.j2": "app/models.py",
+            "extensions.py.j2": "app/extensions.py",
+        }
+        for template_file, output_file in sqlite_templates.items():
+            template_path = template_dir / "sqlite" / template_file
+            output_path = project_path / output_file
+            if template_path.exists():
+                render_template(template_path, output_path)
+
+    # Render admin-user templates
+    if "admin-user" in features:
+        admin_user_templates = {
+            "auth.py.j2": "app/auth.py",
+        }
+        for template_file, output_file in admin_user_templates.items():
+            template_path = template_dir / "admin_user" / template_file
+            output_path = project_path / output_file
+            if template_path.exists():
+                render_template(template_path, output_path)
+
+    # Render admin-panel templates
+    if "admin-panel" in features:
+        admin_panel_templates = {
+            "admin.py.j2": "app/admin.py",
+        }
+        for template_file, output_file in admin_panel_templates.items():
+            template_path = template_dir / "admin_panel" / template_file
+            output_path = project_path / output_file
+            if template_path.exists():
+                render_template(template_path, output_path)
+
+    # Render API templates
+    if "api" in features:
+        api_templates = {
+            "api.py.j2": "app/api.py",
+        }
+        for template_file, output_file in api_templates.items():
+            template_path = template_dir / "api" / template_file
+            output_path = project_path / output_file
+            if template_path.exists():
+                render_template(template_path, output_path)
+
+    # Render HTML templates
+    html_templates = [
+        "base.html",
+        "index.html",
+    ]
+
+    if "admin-user" in features:
+        html_templates.extend([
+            "login.html",
+            "register.html",
+        ])
+
+    if "admin-panel" in features:
+        html_templates.extend([
+            "admin/dashboard.html",
+            "admin/users.html",
+            "admin/items.html",
+        ])
+
+    if "sqlite" in features and "admin-user" in features:
+        html_templates.extend([
+            "items.html",
+            "create_item.html",
+            "edit_item.html",
+        ])
+
+    for template_file in html_templates:
+        template_path = template_dir / "templates" / template_file
+        output_path = project_path / "templates" / template_file
+        if template_path.exists():
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(template_path, output_path)
+
+    # Render static files
+    static_templates = [
+        "style.css.j2",
+    ]
+
+    for template_file in static_templates:
+        template_path = template_dir / "static" / template_file
+        output_path = project_path / "static" / template_file.replace(".j2", "")
+        if template_path.exists():
+            render_template(template_path, output_path)
+
+    # Create setup script
+    setup_template = template_dir / "base" / "setup.sh.j2"
+    setup_path = project_path / "setup.sh"
+    if setup_template.exists():
+        render_template(setup_template, setup_path)
+        os.chmod(setup_path, 0o755)
+
+    # Create .gitignore
+    gitignore_content = """# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Translations
+*.mo
+*.pot
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Flask
+instance/
+.webassets-cache
+"""
+    with open(project_path / ".gitignore", "w") as f:
+        f.write(gitignore_content)
+
+    # Create README
+    readme_content = f"""# {name}
+
+A Flask application created with the Flask CLI.
+
+## Features
+
+"""
+    for feature in features:
+        readme_content += f"- {feature.replace('-', ' ').title()}\n"
+
+    readme_content += """
+## Setup
+
+```bash
+# Make the setup script executable
+chmod +x setup.sh
+
+# Run the setup script
+./setup.sh
+```
+
+## Running
+
+```bash
+# Activate virtual environment
+source venv/bin/activate
+
+# Run the application
+python run.py
+```
+
+## API Endpoints
+
+"""
+    if "api" in features:
+        readme_content += """
+- `GET /api/items` - Get all items
+- `GET /api/items/<id>` - Get a specific item
+- `POST /api/items` - Create a new item (requires authentication)
+- `PUT /api/items/<id>` - Update an item (requires authentication)
+- `DELETE /api/items/<id>` - Delete an item (requires authentication)
+"""
+
+    with open(project_path / "README.md", "w") as f:
+        f.write(readme_content)
+
+    click.echo(f"\nProject '{name}' created successfully!")
+    click.echo(f"\nNext steps:")
+    click.echo(f"  cd {project_path}")
+    click.echo(f"  chmod +x setup.sh")
+    click.echo(f"  ./setup.sh")
+    click.echo(f"\nOr manually:")
+    click.echo(f"  python3 -m venv venv")
+    click.echo(f"  source venv/bin/activate")
+    click.echo(f"  pip install -r requirements.txt")
+    if "sqlite" in features:
+        click.echo(f"  python -c \"from app import create_app; from extensions import db; app = create_app(); app.app_context().push(); db.create_all()\"")
+    click.echo(f"  python run.py")
 
 
 cli = FlaskGroup(

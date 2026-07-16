@@ -1,0 +1,55 @@
+from flask import Flask
+from config import Config
+{% if 'sqlite' in features %}
+from .extensions import db, migrate
+{% endif %}
+{% if 'admin-user' in features %}
+from flask_login import LoginManager
+{% endif %}
+
+def create_app(config_class=Config):
+    app = Flask(__name__)
+    app.config.from_object(config_class)
+
+{% if 'sqlite' in features %}
+    db.init_app(app)
+    migrate.init_app(app, db)
+{% endif %}
+
+{% if 'admin-user' in features %}
+    login_manager = LoginManager()
+    login_manager.init_app(app)
+    login_manager.login_view = 'auth.login'
+    login_manager.login_message_category = 'info'
+
+    @login_manager.user_loader
+    def load_user(user_id):
+        from .models import User
+        return User.query.get(int(user_id))
+{% endif %}
+
+{% if 'admin-panel' in features %}
+    from .admin import admin_bp
+    app.register_blueprint(admin_bp)
+{% endif %}
+
+{% if 'api' in features %}
+    from .api import api_bp
+    app.register_blueprint(api_bp, url_prefix='/api')
+{% endif %}
+
+    from .routes import main_bp
+    app.register_blueprint(main_bp)
+
+{% if 'admin-user' in features %}
+    from .auth import auth_bp
+    app.register_blueprint(auth_bp)
+{% endif %}
+
+    with app.app_context():
+{% if 'sqlite' in features %}
+        from .models import Item
+        db.create_all()
+{% endif %}
+
+    return app
